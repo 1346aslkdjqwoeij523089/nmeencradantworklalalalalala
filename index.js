@@ -119,6 +119,21 @@ function canChangeNickname(executorMember, targetMember) {
   return { allowed: true };
 }
 
+function canManageRole(executorMember, targetRole) {
+  const guild = executorMember.guild;
+  if (guild.ownerId === executorMember.id) return { allowed: true };
+
+  if (!executorMember.permissions.has('ADMINISTRATOR')) {
+    return { allowed: false, reason: 'You do not have permission to use this command.' };
+  }
+
+  if (targetRole.position >= executorMember.roles.highest.position) {
+    return { allowed: false, reason: 'You cannot manage a role that is higher than or equal to your highest role.' };
+  }
+
+  return { allowed: true };
+}
+
 // --- Discord Bot ---
 const client = new Client({
   intents: [
@@ -152,9 +167,28 @@ client.once('ready', async () => {
     ],
   };
 
+  const roleCommand = {
+    name: 'role',
+    description: 'Toggle a role for a user (add or remove)',
+    options: [
+      {
+        name: 'user',
+        type: ApplicationCommandOptionType.User,
+        description: 'The user to modify',
+        required: true,
+      },
+      {
+        name: 'role',
+        type: ApplicationCommandOptionType.Role,
+        description: 'The role to toggle',
+        required: true,
+      },
+    ],
+  };
+
   try {
-    await client.application.commands.set([nickCommand]);
-    console.log('[Discord] Registered /nick slash command globally.');
+    await client.application.commands.set([nickCommand, roleCommand]);
+    console.log('[Discord] Registered /nick and /role slash commands globally.');
   } catch (err) {
     console.error('[Discord] Failed to register slash commands:', err);
   }
@@ -223,7 +257,8 @@ client.on('messageCreate', async (message) => {
       fields: [
         { name: '=ping', value: 'Check bot latency.' },
         { name: '=encradant', value: 'Learn about the bot.' },
-        { name: '=nick @user <nickname>', value: 'Change a user\'s nickname (requires permissions).' },
+        { name: '=nick @user|userID <nickname>', value: 'Change a user\'s nickname (requires permissions).' },
+        { name: '=role @user|userID @role|roleID', value: 'Toggle a role for a user (admin/owner only).' },
         { name: '=help', value: 'Show this help message.' },
       ],
       footer: { text: 'Noir Mirage Enterprise' },
@@ -234,22 +269,42 @@ client.on('messageCreate', async (message) => {
   if (command === 'nick') {
     if (!message.guild) return message.reply('This command can only be used in a server.');
 
-    const targetUser = message.mentions.users.first();
-    if (!targetUser) return message.reply('Please mention a user to rename. Usage: `=nick @user <new nickname>`');
+    let targetUser = message.mentions.users.first();
+    let targetMember;
+    let nickname;
 
-    const mentionRegex = new RegExp(`^<@!?${targetUser.id}>`);
-    const nickname = message.content
-      .slice(prefix.length)
-      .trim()
-      .replace(/^nick\s+/i, '')
-      .replace(mentionRegex, '')
-      .trim();
+    if (targetUser) {
+      targetMember = await message.guild.members.fetch(targetUser.id).catch(() => null);
+      const mentionRegex = new RegExp(`^<@!?${targetUser.id}>`);
+      nickname = message.content
+        .slice(prefix.length)
+        .trim()
+        .replace(/^nick\s+/i, '')
+        .replace(mentionRegex, '')
+        .trim();
+    } else {
+      const potentialId = args[0];
+      if (/^\d{17,20}$/.test(potentialId)) {
+        targetMember = await message.guild.members.fetch(potentialId).catch(() => null);
+        if (targetMember) {
+          targetUser = targetMember.user;
+          nickname = message.content
+            .slice(prefix.length)
+            .trim()
+            .replace(/^nick\s+/i, '')
+            .replace(potentialId, '')
+            .trim();
+        }
+      }
+    }
 
-    if (!nickname) return message.reply('Please provide a new nickname. Usage: `=nick @user <new nickname>`');
+    if (!targetMember || !targetUser) {
+      return message.reply('Please mention a user or provide a valid user ID. Usage: `=nick @user <new nickname>` or `=nick <userID> <new nickname>`');
+    }
+
+    if (!nickname) return message.reply('Please provide a new nickname. Usage: `=nick @user <new nickname>` or `=nick <userID> <new nickname>`');
 
     const executorMember = message.member;
-    const targetMember = await message.guild.members.fetch(targetUser.id).catch(() => null);
-    if (!targetMember) return message.reply('Could not find that user in this server.');
 
     const check = canChangeNickname(executorMember, targetMember);
     if (!check.allowed) {
