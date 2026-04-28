@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, EmbedBuilder, AttachmentBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, AttachmentBuilder, ApplicationCommandOptionType } = require('discord.js');
 const express = require('express');
 const { createCanvas, loadImage } = require('@napi-rs/canvas');
 
@@ -88,6 +88,37 @@ async function generateWelcomeCard(member) {
   return canvas.encode('png');
 }
 
+// --- Nickname Permission Helper ---
+const ALLOWED_NICK_ROLES = [
+  '1490149356983160932',
+  '1490150944766165145',
+  '1490151698906353766',
+  '1490150602771271720',
+];
+
+function canChangeNickname(executorMember, targetMember) {
+  const guild = executorMember.guild;
+  if (guild.ownerId === executorMember.id) return { allowed: true };
+
+  if (executorMember.permissions.has('ADMINISTRATOR')) {
+    if (targetMember.roles.highest.position >= executorMember.roles.highest.position) {
+      return { allowed: false, reason: 'You cannot change the nickname of someone with a higher or equal role.' };
+    }
+    return { allowed: true };
+  }
+
+  const hasAllowedRole = ALLOWED_NICK_ROLES.some(roleId => executorMember.roles.cache.has(roleId));
+  if (!hasAllowedRole) {
+    return { allowed: false, reason: 'You do not have permission to use this command.' };
+  }
+
+  if (targetMember.roles.highest.position >= executorMember.roles.highest.position) {
+    return { allowed: false, reason: 'You cannot change the nickname of someone with a higher or equal role.' };
+  }
+
+  return { allowed: true };
+}
+
 // --- Discord Bot ---
 const client = new Client({
   intents: [
@@ -98,9 +129,35 @@ const client = new Client({
   ],
 });
 
-client.once('ready', () => {
+client.once('ready', async () => {
   console.log(`[Discord] Logged in as ${client.user.tag}`);
   client.user.setActivity('Noir Mirage Enterprise', { type: 'WATCHING' });
+
+  const nickCommand = {
+    name: 'nick',
+    description: "Change a user's nickname",
+    options: [
+      {
+        name: 'user',
+        type: ApplicationCommandOptionType.User,
+        description: 'The user to rename',
+        required: true,
+      },
+      {
+        name: 'nickname',
+        type: ApplicationCommandOptionType.String,
+        description: 'The new nickname',
+        required: true,
+      },
+    ],
+  };
+
+  try {
+    await client.application.commands.set([nickCommand]);
+    console.log('[Discord] Registered /nick slash command globally.');
+  } catch (err) {
+    console.error('[Discord] Failed to register slash commands:', err);
+  }
 });
 
 // --- Welcome Event ---
@@ -144,7 +201,7 @@ client.on('guildMemberAdd', async (member) => {
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
-  const prefix = '!';
+  const prefix = '=';
   if (!message.content.startsWith(prefix)) return;
 
   const args = message.content.slice(prefix.length).trim().split(/ +/);
@@ -154,23 +211,89 @@ client.on('messageCreate', async (message) => {
     return message.reply('Pong! 🏓');
   }
 
-  if (command === 'encradant') {
-    return message.reply('I am NME Encradant, servant of Noir Mirage Enterprise.');
+  if (command === 'encadrant') {
+    return message.reply('I am NME Encadrant, servant of Noir Mirage Enterprise.');
   }
 
   if (command === 'help') {
     const helpEmbed = {
       color: 0x2f3136,
-      title: 'NME Encradant - Command List',
+      title: 'NME Dncadrant - Command List',
       description: 'Here are the available commands:',
       fields: [
-        { name: '!ping', value: 'Check bot latency.' },
-        { name: '!encradant', value: 'Learn about the bot.' },
-        { name: '!help', value: 'Show this help message.' },
+        { name: '=ping', value: 'Check bot latency.' },
+        { name: '=encradant', value: 'Learn about the bot.' },
+        { name: '=nick @user <nickname>', value: 'Change a user\'s nickname (requires permissions).' },
+        { name: '=help', value: 'Show this help message.' },
       ],
       footer: { text: 'Noir Mirage Enterprise' },
     };
     return message.reply({ embeds: [helpEmbed] });
+  }
+
+  if (command === 'nick') {
+    if (!message.guild) return message.reply('This command can only be used in a server.');
+
+    const targetUser = message.mentions.users.first();
+    if (!targetUser) return message.reply('Please mention a user to rename. Usage: `=nick @user <new nickname>`');
+
+    const mentionRegex = new RegExp(`^<@!?${targetUser.id}>`);
+    const nickname = message.content
+      .slice(prefix.length)
+      .trim()
+      .replace(/^nick\s+/i, '')
+      .replace(mentionRegex, '')
+      .trim();
+
+    if (!nickname) return message.reply('Please provide a new nickname. Usage: `=nick @user <new nickname>`');
+
+    const executorMember = message.member;
+    const targetMember = await message.guild.members.fetch(targetUser.id).catch(() => null);
+    if (!targetMember) return message.reply('Could not find that user in this server.');
+
+    const check = canChangeNickname(executorMember, targetMember);
+    if (!check.allowed) {
+      return message.reply({ content: check.reason, allowedMentions: { repliedUser: true } });
+    }
+
+    try {
+      await targetMember.setNickname(nickname);
+      return message.reply(`Successfully changed ${targetUser.tag}'s nickname to **${nickname}**.`);
+    } catch (err) {
+      console.error('[Nick] Error setting nickname:', err);
+      return message.reply('I was unable to change that user\'s nickname. Please check my permissions.');
+    }
+  }
+});
+
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+  if (interaction.commandName !== 'nick') return;
+
+  if (!interaction.guild) {
+    return interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+  }
+
+  const targetUser = interaction.options.getUser('user');
+  const nickname = interaction.options.getString('nickname');
+
+  const executorMember = interaction.member;
+  const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
+  if (!targetMember) {
+    return interaction.reply({ content: 'Could not find that user in this server.', ephemeral: true });
+  }
+
+  const check = canChangeNickname(executorMember, targetMember);
+  if (!check.allowed) {
+    return interaction.reply({ content: check.reason, ephemeral: true });
+  }
+
+  try {
+    await targetMember.setNickname(nickname);
+    return interaction.reply(`Successfully changed ${targetUser.tag}'s nickname to **${nickname}**.`);
+  } catch (err) {
+    console.error('[Nick] Error setting nickname via slash command:', err);
+    return interaction.reply({ content: 'I was unable to change that user\'s nickname. Please check my permissions.', ephemeral: true });
   }
 });
 
